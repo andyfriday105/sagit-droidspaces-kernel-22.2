@@ -9,6 +9,7 @@ on:
       - '.github/workflows/build-sagit.yml'
       - 'config/**'
       - 'patches/**'
+      - 'scripts/**'
 
 jobs:
   build:
@@ -21,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison build-essential flex libssl-dev libelf-dev \
-            python3 zip unzip cpio kmod lz4 xz-utils device-tree-compiler abootimg \
+            python3 zip unzip cpio kmod lz4 xz-utils device-tree-compiler \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Fetch LineageOS kernel (lineage-22.2 / Linux 4.4.302)
@@ -41,7 +42,7 @@ jobs:
           git apply ../patches/02-cgroup-file-prefix-4.4.patch
           echo "applied cgroup file-prefix patch"
           if [ -f net/netfilter/xt_qtaguid.c ]; then
-            echo "::warning::unexpected xt_qtaguid.c present - 01 patch intentionally not applied"
+            echo "::warning::unexpected xt_qtaguid.c present"
           else
             echo "ok: no xt_qtaguid.c on 4.4.302 -> 01-xt_qtaguid not needed"
           fi
@@ -69,7 +70,7 @@ jobs:
             line=$(grep -E "^(# )?CONFIG_${o}(=| is not set)" out/.config | head -1); echo "  $o -> ${line:-ABSENT}";
           done
           for o in SYSVIPC POSIX_MQUEUE PID_NS IPC_NS UTS_NS NET_NS USER_NS DEVTMPFS MEMCG MACH_SAGIT; do
-            grep -q "^CONFIG_${o}=y" out/.config || { echo "::error::CONFIG_${o} missing after olddefconfig"; exit 1; }
+            grep -q "^CONFIG_${o}=y" out/.config || { echo "::error::CONFIG_${o} missing"; exit 1; }
           done
           grep -q '^CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y' out/.config || { echo "::error::appended-dtb disabled"; exit 1; }
 
@@ -90,11 +91,11 @@ jobs:
           d=open(p,'rb').read()
           print('Image.gz-dtb size', len(d), 'head', d[:4].hex())
           assert d[:2]==bytes.fromhex('1f8b'), 'not gzip'
-          assert bytes.fromhex('d00dfeed') in d, 'no FDT magic (dtb not appended?)'
+          assert bytes.fromhex('d00dfeed') in d, 'no FDT magic'
           print('OK: gzip kernel + appended FDT(s)')
           PYEOF
 
-      - name: Repack official boot.img (optional)
+      - name: Repack official boot.img (mkboot.py)
         continue-on-error: true
         run: |
           set -e
@@ -102,12 +103,9 @@ jobs:
           BOOT_URL="${BOOT_URL:-https://mirrorbits.lineageos.org/full/sagit/20261106/boot.img}"
           echo "Downloading $BOOT_URL"
           curl -fL --retry 3 --connect-timeout 30 -o ../stock-boot.img "$BOOT_URL" || { echo "::warning::boot.img download failed; skipping repack"; exit 0; }
-          ls -l ../stock-boot.img
-          abootimg -i ../stock-boot.img || true
-          cp -f ../stock-boot.img ../boot-sagit-droidspaces.img
-          abootimg -u ../boot-sagit-droidspaces.img -k out/arch/arm64/boot/Image.gz-dtb
-          abootimg -i ../boot-sagit-droidspaces.img || true
-          ls -l ../boot-sagit-droidspaces.img
+          python3 ../scripts/mkboot.py info ../stock-boot.img || true
+          python3 ../scripts/mkboot.py repack --orig ../stock-boot.img --kernel out/arch/arm64/boot/Image.gz-dtb --out ../boot-sagit-droidspaces.img
+          python3 ../scripts/mkboot.py info ../boot-sagit-droidspaces.img || true
           sha256sum ../boot-sagit-droidspaces.img
 
       - name: Upload artifacts
@@ -122,4 +120,5 @@ jobs:
             kernel-commit.txt
             boot-sagit-droidspaces.img
           if-no-files-found: warn
+          include-hidden-files: true
           retention-days: 14
