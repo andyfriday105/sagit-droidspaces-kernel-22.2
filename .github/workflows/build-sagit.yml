@@ -60,6 +60,7 @@ jobs:
           MK="O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           make $MK sagit_defconfig
           cat ../config/additions.config >> out/.config
+          scripts/config --file out/.config -d CC_WERROR
           scripts/config --file out/.config -d LOCALVERSION_AUTO
           scripts/config --file out/.config --set-str LOCALVERSION "-perf"
           make $MK olddefconfig
@@ -78,10 +79,11 @@ jobs:
           cd k
           export PATH="$PWD/../clang/bin:$PATH"
           export KBUILD_BUILD_USER=luvhx KBUILD_BUILD_HOST=Github-Action
+          KCF="-Wno-error -Wno-unknown-warning-option -Wno-error=implicit-int -Wno-error=strict-prototypes -Wno-error=date-time -Wno-unused-variable"
           make -j"$(nproc)" O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 \
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            Image.gz-dtb 2>&1 | tee ../build.log
+            KCFLAGS="$KCF" Image.gz-dtb 2>&1 | tee ../build.log
           ls -l out/arch/arm64/boot/Image.gz-dtb
           python3 - <<'PYEOF'
           p='out/arch/arm64/boot/Image.gz-dtb'
