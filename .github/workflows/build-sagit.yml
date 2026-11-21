@@ -1,0 +1,121 @@
+name: build-sagit-droidspaces-22.2
+
+# Xiaomi Mi 6 (sagit) / MSM8998 / LineageOS 22.2 / Linux 4.4.302 (non-GKI)
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-sagit.yml'
+      - 'config/**'
+      - 'patches/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison build-essential flex libssl-dev libelf-dev \
+            python3 zip unzip cpio kmod lz4 xz-utils device-tree-compiler abootimg \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Fetch LineageOS kernel (lineage-22.2 / Linux 4.4.302)
+        run: |
+          set -e
+          git clone -q --depth 1 -b lineage-22.2 \
+            https://github.com/LineageOS/android_kernel_xiaomi_msm8998.git k
+          cd k
+          git log --oneline -1 | tee ../kernel-commit.txt
+          grep -m1 '^SUBLEVEL' Makefile | tee -a ../kernel-commit.txt
+          sed -i 's|res="$res${scm:++}"|res="$res"|' scripts/setlocalversion || true
+
+      - name: Apply DroidSpaces non-GKI patch (22.2)
+        run: |
+          set -e
+          cd k
+          git apply ../patches/02-cgroup-file-prefix-4.4.patch
+          echo "applied cgroup file-prefix patch"
+          if [ -f net/netfilter/xt_qtaguid.c ]; then
+            echo "::warning::unexpected xt_qtaguid.c present - 01 patch intentionally not applied"
+          else
+            echo "ok: no xt_qtaguid.c on 4.4.302 -> 01-xt_qtaguid not needed"
+          fi
+
+      - name: Fetch Proton clang 13
+        run: |
+          set -e
+          git clone -q --depth 1 -b clang-13 https://gitlab.com/LeCmnGend/proton-clang.git clang
+          clang/bin/clang --version
+
+      - name: Configure (sagit_defconfig + DroidSpaces additions)
+        run: |
+          set -e
+          cd k
+          export PATH="$PWD/../clang/bin:$PATH"
+          MK="O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          make $MK sagit_defconfig
+          cat ../config/additions.config >> out/.config
+          scripts/config --file out/.config -d LOCALVERSION_AUTO
+          scripts/config --file out/.config --set-str LOCALVERSION "-perf"
+          make $MK olddefconfig
+          echo "=== key options ==="
+          for o in SYSVIPC POSIX_MQUEUE NAMESPACES PID_NS UTS_NS IPC_NS NET_NS USER_NS DEVTMPFS OVERLAY_FS CGROUPS MEMCG MEMCG_SWAP CFS_BANDWIDTH CGROUP_PIDS CGROUP_DEVICE CGROUP_CPUACCT SECCOMP_FILTER VETH BRIDGE MACVLAN NF_TABLES IP6_NF_NAT IP6_NF_TARGET_MASQUERADE NETFILTER_XT_MATCH_ADDRTYPE MACH_SAGIT BUILD_ARM64_APPENDED_DTB_IMAGE; do
+            line=$(grep -E "^(# )?CONFIG_${o}(=| is not set)" out/.config | head -1); echo "  $o -> ${line:-ABSENT}";
+          done
+          for o in SYSVIPC POSIX_MQUEUE PID_NS IPC_NS UTS_NS NET_NS USER_NS DEVTMPFS MEMCG MACH_SAGIT; do
+            grep -q "^CONFIG_${o}=y" out/.config || { echo "::error::CONFIG_${o} missing after olddefconfig"; exit 1; }
+          done
+          grep -q '^CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y' out/.config || { echo "::error::appended-dtb disabled"; exit 1; }
+
+      - name: Build Image.gz-dtb
+        run: |
+          set -e
+          cd k
+          export PATH="$PWD/../clang/bin:$PATH"
+          export KBUILD_BUILD_USER=luvhx KBUILD_BUILD_HOST=Github-Action
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            Image.gz-dtb 2>&1 | tee ../build.log
+          ls -l out/arch/arm64/boot/Image.gz-dtb
+          python3 - <<'PYEOF'
+          p='out/arch/arm64/boot/Image.gz-dtb'
+          d=open(p,'rb').read()
+          print('Image.gz-dtb size', len(d), 'head', d[:4].hex())
+          assert d[:2]==bytes.fromhex('1f8b'), 'not gzip'
+          assert bytes.fromhex('d00dfeed') in d, 'no FDT magic (dtb not appended?)'
+          print('OK: gzip kernel + appended FDT(s)')
+          PYEOF
+
+      - name: Repack official boot.img (optional)
+        continue-on-error: true
+        run: |
+          set -e
+          cd k
+          BOOT_URL="${BOOT_URL:-https://mirrorbits.lineageos.org/full/sagit/20261106/boot.img}"
+          echo "Downloading $BOOT_URL"
+          curl -fL --retry 3 --connect-timeout 30 -o ../stock-boot.img "$BOOT_URL" || { echo "::warning::boot.img download failed; skipping repack"; exit 0; }
+          ls -l ../stock-boot.img
+          abootimg -i ../stock-boot.img || true
+          abootimg -u ../stock-boot.img -k out/arch/arm64/boot/Image.gz-dtb -o ../boot-sagit-droidspaces.img
+          ls -l ../boot-sagit-droidspaces.img
+          sha256sum ../boot-sagit-droidspaces.img || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sagit-4.4.302-droidspaces
+          path: |
+            k/out/arch/arm64/boot/Image.gz-dtb
+            k/out/.config
+            k/out/System.map
+            build.log
+            kernel-commit.txt
+            boot-sagit-droidspaces.img
+          if-no-files-found: warn
+          retention-days: 14
