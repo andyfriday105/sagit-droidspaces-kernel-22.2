@@ -104,9 +104,11 @@ jobs:
           curl -fL --retry 3 --connect-timeout 30 -o ../stock-boot.img "$BOOT_URL" || { echo "::warning::boot.img download failed; skipping repack"; exit 0; }
           ls -l ../stock-boot.img
           abootimg -i ../stock-boot.img || true
-          abootimg -u ../stock-boot.img -k out/arch/arm64/boot/Image.gz-dtb -o ../boot-sagit-droidspaces.img
+          cp -f ../stock-boot.img ../boot-sagit-droidspaces.img
+          abootimg -u ../boot-sagit-droidspaces.img -k out/arch/arm64/boot/Image.gz-dtb
+          abootimg -i ../boot-sagit-droidspaces.img || true
           ls -l ../boot-sagit-droidspaces.img
-          sha256sum ../boot-sagit-droidspaces.img || true
+          sha256sum ../boot-sagit-droidspaces.img
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
